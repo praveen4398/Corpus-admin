@@ -129,12 +129,11 @@ def delete_record(token, record_id):
         response = requests.delete(f"{RECORDS_API_URL}{record_id}", headers=headers)
         if response.status_code == 204:
             return True, "Record deleted successfully."
-        else:
-            try:
-                detail = response.json().get("detail", response.text)
-            except Exception:
-                detail = response.text
-            return False, f"Delete failed: {response.status_code}: {detail}"
+        try:
+            detail = response.json().get("detail", response.text)
+        except Exception:
+            detail = response.text or "Error deleting record."
+        return False, f"Delete failed: {response.status_code}: {detail}"
     except Exception as e:
         return False, f"Network error: {e}"
 
@@ -165,6 +164,22 @@ def update_record(
             return False, f"Update failed: {response.status_code}: {detail}"
     except Exception as e:
         return False, f"Network error: {e}"
+
+
+def fetch_record_by_title(token, record_title, media_type_filter=None):
+    """Fetch a single record by title (case-insensitive), optionally filtered by media type."""
+    try:
+        records = fetch_all_records(token)
+        for record in records:
+            if record.get("title", "").lower() == record_title.lower():
+                if media_type_filter and record.get("media_type") != media_type_filter:
+                    continue
+                return record
+        st.warning("Record not found.")
+        return None
+    except Exception as e:
+        st.error(f"Error fetching record by title: {e}")
+        return None
 
 
 def render_update_record_form(record_id, current_data):
@@ -215,10 +230,10 @@ def render_update_record_form(record_id, current_data):
             col1, col2 = st.columns(2)
             with col1:
                 if st.form_submit_button("✅ Update", type="primary"):
-                    safe_title = (title or "").strip()
-                    safe_description = (description or "").strip()
-                    safe_user_id = (user_id or "").strip()
-                    safe_category_id = (category_id or "").strip()
+                    safe_title = str(title or "").strip()
+                    safe_description = str(description or "").strip()
+                    safe_user_id = str(user_id or "").strip()
+                    safe_category_id = str(category_id or "").strip()
                     if not safe_title:
                         st.error("❌ Title is required.")
                     elif not safe_user_id:
@@ -238,6 +253,9 @@ def render_update_record_form(record_id, current_data):
                             )
                         if success:
                             st.success(msg)
+                            # Refresh search results if record was updated from search
+                            if 'record_search_result' in st.session_state and st.session_state.record_search_result and st.session_state.record_search_result.get('uid') == record_id:
+                                st.session_state.record_search_result = fetch_record_by_id(st.session_state.token, record_id)
                             del st.session_state.edit_record
                             st.rerun()
                         else:
@@ -302,26 +320,79 @@ def render_records_page():
             st.info("📭 No records found.")
 
     with tab2:
-        st.markdown("### Search Record by ID")
+        st.markdown("### Search Record")
 
+        # Restore search state from session or initialize
+        if 'record_search_value' not in st.session_state:
+            st.session_state.record_search_value = ''
+        if 'record_search_mode' not in st.session_state:
+            st.session_state.record_search_mode = 'ID'
+        if 'record_search_result' not in st.session_state:
+            st.session_state.record_search_result = None
+        if 'record_search_success' not in st.session_state:
+            st.session_state.record_search_success = ''
+
+        search_mode = st.radio(
+            "Search by:", ["ID", "Title"], horizontal=True, key="search_mode",
+            index=["ID", "Title"].index(st.session_state.record_search_mode)
+        )
         col1, col2 = st.columns([3, 1])
         with col1:
-            record_id = st.text_input(
-                "Enter Record ID",
-                placeholder="e.g., 6258d724-498c-4811-b5a9-bfabc69fa3b9",
-            )
+            if search_mode == "ID":
+                search_value = st.text_input(
+                    "Enter Record ID",
+                    value=st.session_state.record_search_value if st.session_state.record_search_mode == "ID" else '',
+                    placeholder="e.g., 6258d724-498c-4811-b5a9-bfabc69fa3b9",
+                    key="search_id_input",
+                )
+            else:
+                search_value = st.text_input(
+                    "Enter Record Title",
+                    value=st.session_state.record_search_value if st.session_state.record_search_mode == "Title" else '',
+                    placeholder="e.g., My Record Title",
+                    key="search_title_input",
+                )
         with col2:
-            search_clicked = st.button("🔍 Search", type="primary")
+            media_type_filter = st.selectbox(
+                "Media Type (optional)",
+                ["Any", "text", "image", "video", "audio"],
+                key="media_type_filter",
+            )
+            search_clicked = st.button("🔍 Search", type="primary", key="search_btn")
 
         searched_record = None
         if search_clicked:
-            if record_id.strip():
+            st.session_state.record_search_mode = search_mode
+            st.session_state.record_search_value = search_value if search_value is not None else ''
+            st.session_state.record_search_success = ''
+            safe_search_value = str(search_value or '')
+            if safe_search_value.strip():
                 with st.spinner("Searching..."):
-                    searched_record = fetch_record_by_id(token, record_id.strip())
+                    if search_mode == "ID":
+                        searched_record = fetch_record_by_id(token, safe_search_value.strip())
+                        # If media type filter is set, check it
+                        if (
+                            searched_record
+                            and media_type_filter != "Any"
+                            and searched_record.get("media_type") != media_type_filter
+                        ):
+                            searched_record = None
+                    else:
+                        mt = media_type_filter if media_type_filter != "Any" else None
+                        searched_record = fetch_record_by_title(token, safe_search_value.strip(), mt)
+                    st.session_state.record_search_result = searched_record
                 if not searched_record:
                     st.error("❌ Record not found.")
             else:
-                st.warning("⚠️ Please enter a valid Record ID.")
+                st.warning(f"⚠️ Please enter a valid Record {search_mode}.")
+
+        # Use session state for displaying results after rerun
+        search_mode = st.session_state.record_search_mode
+        search_value = st.session_state.record_search_value
+        searched_record = st.session_state.record_search_result
+        if st.session_state.record_search_success:
+            st.success(st.session_state.record_search_success)
+            st.session_state.record_search_success = ''
 
         # Display record details
         if searched_record:
@@ -372,7 +443,7 @@ def render_records_page():
                         st.rerun()
 
                 with col2:
-                    confirm = st.checkbox("🗑️ Confirm deletion")
+                    confirm = st.checkbox("🗑️ Confirm deletion", key=f"confirm_delete_{searched_record['uid']}")
                     if st.button(
                         "🗑️ Delete Record",
                         key=f"delete_{searched_record['uid']}",
@@ -382,7 +453,10 @@ def render_records_page():
                         with st.spinner("Deleting..."):
                             success, msg = delete_record(token, searched_record["uid"])
                         if success:
-                            st.success(msg)
+                            st.session_state.record_search_success = msg
+                            st.session_state.record_search_result = None
+                            if hasattr(st.session_state, "edit_record"):
+                                del st.session_state.edit_record
                             st.rerun()
                         else:
                             st.error(msg)

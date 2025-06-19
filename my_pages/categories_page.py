@@ -59,6 +59,20 @@ def fetch_category_by_id(token, category_id):
         return None
 
 
+def fetch_category_by_name(token, category_name):
+    """Fetch a single category by name (case-insensitive)."""
+    try:
+        categories = fetch_all_categories(token)
+        for category in categories:
+            if category.get("name", "").lower() == category_name.lower():
+                return category
+        st.warning("Category not found.")
+        return None
+    except Exception as e:
+        st.error(f"Error fetching category by name: {e}")
+        return None
+
+
 def create_category(token, name, title, description, published, rank):
     """Create a new category."""
     payload = {
@@ -113,8 +127,11 @@ def delete_category(token, category_id):
         )
         if response.status_code == 204:
             return True, "Category deleted successfully."
-        else:
-            return False, response.json().get("detail", "Unknown error occurred.")
+        try:
+            detail = response.json().get("detail", "Unknown error occurred.")
+        except Exception:
+            detail = response.text or "Unknown error occurred."
+        return False, detail
     except Exception as e:
         return False, f"Network error: {e}"
 
@@ -153,7 +170,10 @@ def render_update_category_form(category_id, current_data):
             cancel = st.form_submit_button("❌ Cancel")
 
             if submitted:
-                if not (name or "").strip() or not (title or "").strip():
+                safe_name = str(name or "")
+                safe_title = str(title or "")
+                safe_description = str(description or "")
+                if not safe_name.strip() or not safe_title.strip():
                     st.session_state.update_category_error = (
                         "Name and Title are required."
                     )
@@ -162,15 +182,18 @@ def render_update_category_form(category_id, current_data):
                     success, msg = update_category(
                         token=st.session_state.token,
                         category_id=category_id,
-                        name=(name or "").strip(),
-                        title=(title or "").strip(),
-                        description=(description or "").strip(),
+                        name=safe_name.strip(),
+                        title=safe_title.strip(),
+                        description=safe_description.strip(),
                         published=published,
                         rank=rank,
                     )
                     if success:
                         st.session_state.update_category_success = msg
                         st.session_state.update_category_error = None
+                        # Refresh search results if category was updated from search
+                        if 'category_search_result' in st.session_state and st.session_state.category_search_result and st.session_state.category_search_result.get('id') == category_id:
+                            st.session_state.category_search_result = fetch_category_by_id(token, category_id)
                         del st.session_state.edit_category
                         st.rerun()
                     else:
@@ -235,26 +258,66 @@ def render_categories_page():
             st.info("📭 No categories found.")
 
     with tab2:
-        st.markdown("### Search Category by ID")
+        st.markdown("### Search Category")
 
+        # Restore search state from session or initialize
+        if 'category_search_value' not in st.session_state:
+            st.session_state.category_search_value = ''
+        if 'category_search_mode' not in st.session_state:
+            st.session_state.category_search_mode = 'ID'
+        if 'category_search_result' not in st.session_state:
+            st.session_state.category_search_result = None
+        if 'category_search_success' not in st.session_state:
+            st.session_state.category_search_success = ''
+
+        search_mode = st.radio(
+            "Search by:", ["ID", "Name"], horizontal=True, key="search_mode",
+            index=["ID", "Name"].index(st.session_state.category_search_mode)
+        )
         col1, col2 = st.columns([3, 1])
         with col1:
-            category_id = st.text_input(
-                "Enter Category ID",
-                placeholder="e.g., 6258d724-498c-4811-b5a9-bfabc69fa3b9",
-            )
+            if search_mode == "ID":
+                search_value = st.text_input(
+                    "Enter Category ID",
+                    value=st.session_state.category_search_value if st.session_state.category_search_mode == "ID" else '',
+                    placeholder="e.g., 6258d724-498c-4811-b5a9-bfabc69fa3b9",
+                    key="search_id_input",
+                )
+            else:
+                search_value = st.text_input(
+                    "Enter Category Name",
+                    value=st.session_state.category_search_value if st.session_state.category_search_mode == "Name" else '',
+                    placeholder="e.g., science",
+                    key="search_name_input",
+                )
         with col2:
-            search_clicked = st.button("🔍 Search", type="primary")
+            search_clicked = st.button("🔍 Search", type="primary", key="search_btn")
 
         searched_category = None
         if search_clicked:
-            if category_id.strip():
+            st.session_state.category_search_mode = search_mode
+            st.session_state.category_search_value = search_value if search_value is not None else ''
+            st.session_state.category_search_success = ''
+            safe_search_value = str(search_value or '')
+            if safe_search_value.strip():
                 with st.spinner("Searching..."):
-                    searched_category = fetch_category_by_id(token, category_id.strip())
+                    if search_mode == "ID":
+                        searched_category = fetch_category_by_id(token, safe_search_value.strip())
+                    else:
+                        searched_category = fetch_category_by_name(token, safe_search_value.strip())
+                    st.session_state.category_search_result = searched_category
                 if not searched_category:
                     st.error("❌ Category not found.")
             else:
-                st.warning("⚠️ Please enter a valid Category ID.")
+                st.warning(f"⚠️ Please enter a valid Category {search_mode}.")
+
+        # Use session state for displaying results after rerun
+        search_mode = st.session_state.category_search_mode
+        search_value = st.session_state.category_search_value
+        searched_category = st.session_state.category_search_result
+        if st.session_state.category_search_success:
+            st.success(st.session_state.category_search_success)
+            st.session_state.category_search_success = ''
 
         # Display category details
         if searched_category:
@@ -305,7 +368,10 @@ def render_categories_page():
                                 token, searched_category["id"]
                             )
                         if success:
-                            st.success(msg)
+                            st.session_state.category_search_success = msg
+                            st.session_state.category_search_result = None
+                            if hasattr(st.session_state, "edit_category"):
+                                del st.session_state.edit_category
                             st.rerun()
                         else:
                             st.error(msg)

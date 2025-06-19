@@ -1,4 +1,17 @@
-venv/
+# Ignore Python bytecode/cache
 *.pyc
+*.pyo
+*.pyd
+*.py[cod]
 __pycache__/
 my_pages/__pycache__/
+
+# Ignore virtual environment folder
+venv/
+
+# Ignore Jupyter notebook configs/extensions
+*.json
+*.js
+*.map
+venv/share/jupyter/
+venv/etc/jupyter/

@@ -121,11 +121,32 @@ def delete_user(token, user_id):
     try:
         headers = COMMON_HEADERS(token)
         r = requests.delete(f"{USERS_API_URL}{user_id}", headers=headers)
-        if r.status_code == 204:
-            return True, "User deleted successfully."
-        return False, r.json().get("detail", "Error deleting user.")
+        if r.status_code == 200:
+            try:
+                message = r.json().get("message", "User deleted successfully.")
+            except Exception:
+                message = "User deleted successfully."
+            return True, message, 200
+        try:
+            detail = r.json().get("detail", "Error deleting user.")
+        except Exception:
+            detail = r.text or "Error deleting user."
+        return False, detail, r.status_code
     except Exception as e:
-        return False, f"Network error: {e}"
+        return False, f"Network error: {e}", None
+
+
+def fetch_users_by_name(token, user_name):
+    """Fetch all users by name (case-insensitive)."""
+    try:
+        users = fetch_all_users(token)
+        matches = [user for user in users if user.get("name", "").lower() == user_name.lower()]
+        if not matches:
+            st.warning("No users found with that name.")
+        return matches
+    except Exception as e:
+        st.error(f"Error fetching users by name: {e}")
+        return []
 
 
 def render_update_user_form(user_id, current_user_data):
@@ -172,22 +193,30 @@ def render_update_user_form(user_id, current_user_data):
             col1, col2, col3 = st.columns([1, 1, 2])
             with col1:
                 if st.form_submit_button("✅ Update", type="primary"):
-                    if not name.strip() or not email.strip():
+                    safe_name = str(name or "")
+                    safe_email = str(email or "")
+                    safe_place = str(place or "")
+                    if not safe_name.strip() or not safe_email.strip():
                         st.error("Name and Email are required.")
                     else:
                         success, msg = update_user(
                             token=st.session_state.token,
                             user_id=user_id,
-                            name=name.strip(),
-                            email=email.strip(),
+                            name=safe_name.strip(),
+                            email=safe_email.strip(),
                             gender=gender,
                             date_of_birth=date_of_birth,
-                            place=place.strip(),
+                            place=safe_place.strip(),
                             is_active=is_active,
                             has_given_consent=has_given_consent,
                         )
                         if success:
                             st.success(msg)
+                            # Refresh search results if user was updated from search
+                            if 'user_search_single' in st.session_state and st.session_state.user_search_single and st.session_state.user_search_single['id'] == user_id:
+                                st.session_state.user_search_single = fetch_user_by_id(st.session_state.token, user_id)
+                            if 'user_search_results' in st.session_state and st.session_state.user_search_results:
+                                st.session_state.user_search_results = [fetch_user_by_id(st.session_state.token, u['id']) if u['id'] == user_id else u for u in st.session_state.user_search_results]
                             del st.session_state.edit_user  # Clear edit state
                             st.rerun()
                         else:
@@ -244,78 +273,172 @@ def render_users_page():
             st.info("📭 No users found.")
 
     with tab2:
-        st.markdown("### Search User by ID")
+        st.markdown("### Search User")
 
+        # Restore search state from session or initialize
+        if 'user_search_value' not in st.session_state:
+            st.session_state.user_search_value = ''
+        if 'user_search_mode' not in st.session_state:
+            st.session_state.user_search_mode = 'ID'
+        if 'user_search_results' not in st.session_state:
+            st.session_state.user_search_results = []
+        if 'user_search_single' not in st.session_state:
+            st.session_state.user_search_single = None
+        if 'user_search_success' not in st.session_state:
+            st.session_state.user_search_success = ''
+
+        search_mode = st.radio(
+            "Search by:", ["ID", "Name"], horizontal=True, key="search_mode",
+            index=["ID", "Name"].index(st.session_state.user_search_mode)
+        )
         col1, col2 = st.columns([3, 1])
         with col1:
-            user_id = st.text_input(
-                "Enter User ID",
-                placeholder="e.g., 6258d724-498c-4811-b5a9-bfabc69fa3b9",
-            )
+            if search_mode == "ID":
+                search_value = st.text_input(
+                    "Enter User ID",
+                    value=st.session_state.user_search_value if st.session_state.user_search_mode == "ID" else '',
+                    placeholder="e.g., 6258d724-498c-4811-b5a9-bfabc69fa3b9",
+                    key="search_id_input",
+                )
+            else:
+                search_value = st.text_input(
+                    "Enter User Name",
+                    value=st.session_state.user_search_value if st.session_state.user_search_mode == "Name" else '',
+                    placeholder="e.g., John Doe",
+                    key="search_name_input",
+                )
         with col2:
-            search_clicked = st.button("🔍 Search", type="primary")
+            search_clicked = st.button("🔍 Search", type="primary", key="search_btn")
 
+        searched_users = []
         searched_user = None
         if search_clicked:
-            if user_id.strip():
+            st.session_state.user_search_mode = search_mode
+            st.session_state.user_search_value = search_value if search_value is not None else ''
+            st.session_state.user_search_success = ''
+            safe_search_value = str(search_value or '')
+            if safe_search_value.strip():
                 with st.spinner("Searching..."):
-                    searched_user = fetch_user_by_id(token, user_id.strip())
-                if not searched_user:
+                    if search_mode == "ID":
+                        searched_user = fetch_user_by_id(token, safe_search_value.strip())
+                        st.session_state.user_search_single = searched_user
+                        st.session_state.user_search_results = []
+                    else:
+                        searched_users = fetch_users_by_name(token, safe_search_value.strip())
+                        st.session_state.user_search_results = searched_users
+                        st.session_state.user_search_single = None
+                if search_mode == "ID" and not searched_user:
                     st.error("❌ User not found.")
+                elif search_mode == "Name" and not searched_users:
+                    st.error("❌ No users found with that name.")
             else:
-                st.warning("⚠️ Please enter a valid User ID.")
+                st.warning(f"⚠️ Please enter a valid User {search_mode}.")
+
+        # Use session state for displaying results after rerun
+        search_mode = st.session_state.user_search_mode
+        search_value = st.session_state.user_search_value
+        searched_user = st.session_state.user_search_single
+        searched_users = st.session_state.user_search_results
+        if st.session_state.user_search_success:
+            st.success(st.session_state.user_search_success)
+            st.session_state.user_search_success = ''
+
+        safe_search_value = str(search_value or '')
 
         # Display user details if found
-        if searched_user:
+        if search_mode == "ID" and searched_user:
             st.markdown("### User Details")
             with st.container():
                 st.markdown("---")
-
                 col1, col2 = st.columns(2)
                 with col1:
                     st.markdown(f"**ID:** `{searched_user.get('id', '')}`")
                     st.markdown(f"**Name:** {searched_user.get('name', '')}")
                     st.markdown(f"**Email:** {searched_user.get('email', '')}")
                     st.markdown(f"**Phone:** {searched_user.get('phone', '')}")
-
                 with col2:
                     st.markdown(f"**Gender:** {searched_user.get('gender', '')}")
-                    st.markdown(
-                        f"**Date of Birth:** {searched_user.get('date_of_birth', '')}"
-                    )
+                    st.markdown(f"**Date of Birth:** {searched_user.get('date_of_birth', '')}")
                     st.markdown(f"**Place:** {searched_user.get('place', '')}")
-                    st.markdown(
-                        f"**Active:** {'✅ Yes' if searched_user.get('is_active') else '❌ No'}"
-                    )
-
+                    st.markdown(f"**Active:** {'✅ Yes' if searched_user.get('is_active') else '❌ No'}")
                 st.markdown("---")
-
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.button(
                         "✏️ Edit User", key=f"edit_{searched_user['id']}", type="primary"
                     ):
-                        st.session_state.edit_user = (
-                            searched_user  # Set the edit_user state
-                        )
+                        st.session_state.edit_user = searched_user
                         st.rerun()
-
                 with col2:
-                    confirm = st.checkbox("🗑️ Confirm deletion")
-                    if st.button(
-                        "🗑️ Delete User",
-                        key=f"delete_{searched_user['id']}",
-                        disabled=not confirm,
-                        type="secondary",
-                    ):
-                        with st.spinner("Deleting..."):
-                            success, msg = delete_user(token, searched_user["id"])
-                        if success:
-                            st.success(msg)
-                            del st.session_state.edit_user  # Clear edit state if any
+                    confirm_key = f"confirm_delete_{searched_user['id']}"
+                    confirm = st.checkbox("🗑️ Confirm deletion", key=confirm_key)
+                    if confirm:
+                        if st.button(
+                            "🗑️ Delete User",
+                            key=f"delete_{searched_user['id']}",
+                            type="secondary",
+                        ):
+                            with st.spinner("Deleting..."):
+                                success, msg, status = delete_user(token, searched_user["id"])
+                            if success:
+                                st.session_state.user_search_success = msg
+                                st.session_state.user_search_single = None
+                                st.session_state.user_search_results = []
+                                if hasattr(st.session_state, "edit_user"):
+                                    del st.session_state.edit_user
+                                st.rerun()
+                            else:
+                                if status == 500:
+                                    st.error("Internal server error. Please contact the administrator or check backend logs.")
+                                else:
+                                    st.error(f"Error: {msg} (Status code: {status})")
+        elif search_mode == "Name" and searched_users:
+            st.markdown(f"### Users with name '{safe_search_value.strip()}'")
+            for idx, user in enumerate(searched_users):
+                with st.container():
+                    st.markdown("---")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.markdown(f"**ID:** `{user.get('id', '')}`")
+                        st.markdown(f"**Name:** {user.get('name', '')}")
+                        st.markdown(f"**Email:** {user.get('email', '')}")
+                        st.markdown(f"**Phone:** {user.get('phone', '')}")
+                    with col2:
+                        st.markdown(f"**Gender:** {user.get('gender', '')}")
+                        st.markdown(f"**Date of Birth:** {user.get('date_of_birth', '')}")
+                        st.markdown(f"**Place:** {user.get('place', '')}")
+                        st.markdown(f"**Active:** {'✅ Yes' if user.get('is_active') else '❌ No'}")
+                    st.markdown("---")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button(
+                            "✏️ Edit User", key=f"edit_{user['id']}_{idx}", type="primary"
+                        ):
+                            st.session_state.edit_user = user
                             st.rerun()
-                        else:
-                            st.error(msg)
+                    with col2:
+                        confirm_key = f"confirm_delete_{user['id']}_{idx}"
+                        confirm = st.checkbox("🗑️ Confirm deletion", key=confirm_key)
+                        if confirm:
+                            if st.button(
+                                "🗑️ Delete User",
+                                key=f"delete_{user['id']}_{idx}",
+                                type="secondary",
+                            ):
+                                with st.spinner("Deleting..."):
+                                    success, msg, status = delete_user(token, user["id"])
+                                if success:
+                                    st.session_state.user_search_success = msg
+                                    # Remove deleted user from results
+                                    st.session_state.user_search_results = [u for u in st.session_state.user_search_results if u['id'] != user['id']]
+                                    if hasattr(st.session_state, "edit_user"):
+                                        del st.session_state.edit_user
+                                    st.rerun()
+                                else:
+                                    if status == 500:
+                                        st.error("Internal server error. Please contact the administrator or check backend logs.")
+                                    else:
+                                        st.error(f"Error: {msg} (Status code: {status})")
 
     with tab3:
         # Only show create form if not editing
