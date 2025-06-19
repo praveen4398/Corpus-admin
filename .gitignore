@@ -1,0 +1,4 @@
+venv/
+*.pyc
+__pycache__/
+my_pages/__pycache__/
