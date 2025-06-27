@@ -4,6 +4,7 @@ import streamlit as st
 from my_pages.categories_page import render_categories_page
 from my_pages.records_page import render_records_page
 from my_pages.users_page import render_users_page
+from my_pages.contributions_page import render_contributions_page
 
 SEND_OTP_URL = "https://backend2.swecha.org/api/v1/auth/send-otp"
 VERIFY_OTP_URL = "https://backend2.swecha.org/api/v1/auth/verify-otp"
@@ -178,6 +179,7 @@ def render_sidebar():
         "👥 Users": "users",
         "📂 Categories": "categories",
         "📄 Records": "records",
+        "📊 Contributions": "contributions",
     }
 
     selected_page = st.sidebar.radio(
@@ -264,6 +266,8 @@ def main():
             render_categories_page()
         elif st.session_state.page == "records":
             render_records_page()
+        elif st.session_state.page == "contributions":
+            render_contributions_page()
     else:
         # User is not logged in, show login page
         render_login_page()

@@ -44,21 +44,70 @@ def fetch_all_users(token, skip=0, limit=100):
     """Fetch all users with pagination."""
     try:
         headers = COMMON_HEADERS(token)
-        params = {"skip": skip, "limit": limit}
-        r = requests.get(USERS_API_URL, params=params, headers=headers)
-        if r.status_code == 200:
-            data = r.json()
-            if isinstance(data, list):  # Ensure the response is a list
-                return data
-            else:
-                st.error("Unexpected response format from the server.")
-                return []
-        else:
-            st.error(f"Failed to fetch users. Status Code: {r.status_code}")
-            return []
+        
+        # Check if we already have all users stored in session state
+        if ('all_users_cache' in st.session_state and 
+            st.session_state.all_users_cache and 
+            not is_cache_stale()):
+            all_users = st.session_state.all_users_cache
+            # Apply pagination to cached data
+            start_idx = skip
+            end_idx = skip + limit
+            return all_users[start_idx:end_idx]
+        
+        # If not cached, fetch all users in batches
+        all_users = []
+        current_skip = 0
+        batch_size = 1000
+        
+        with st.spinner("Loading all users..."):
+            while True:
+                params = {"skip": current_skip, "limit": batch_size}
+                r = requests.get(USERS_API_URL, params=params, headers=headers)
+                
+                if r.status_code == 200:
+                    data = r.json()
+                    if isinstance(data, list):
+                        if not data:  # Empty response, we've reached the end
+                            break
+                        all_users.extend(data)
+                        current_skip += batch_size
+                        
+                        # If we got less than batch_size, we've reached the end
+                        if len(data) < batch_size:
+                            break
+                    else:
+                        st.error("Unexpected response format from the server.")
+                        return []
+                else:
+                    st.error(f"Failed to fetch users. Status Code: {r.status_code}")
+                    return []
+        
+        # Store in session state for future use
+        st.session_state.all_users_cache = all_users
+        st.session_state.all_users_cache_timestamp = datetime.now()
+        
+        # Apply pagination to the complete dataset
+        start_idx = skip
+        end_idx = skip + limit
+        return all_users[start_idx:end_idx]
+        
     except Exception as e:
         st.error(f"Network error: {e}")
         return []
+
+
+def is_cache_stale(max_age_minutes=30):
+    """Check if the cached data is stale and needs refresh."""
+    if 'all_users_cache_timestamp' not in st.session_state:
+        return True
+    
+    cache_timestamp = st.session_state.all_users_cache_timestamp
+    if not isinstance(cache_timestamp, datetime):
+        return True
+    
+    age = datetime.now() - cache_timestamp
+    return age.total_seconds() > (max_age_minutes * 60)
 
 
 def create_user(token, name, email, phone, gender, dob, place, password, role_ids):
@@ -250,10 +299,34 @@ def render_users_page():
 
     with tab1:
         st.markdown("### All Users")
-        if st.button("🔄 Refresh Users", type="secondary"):
-            st.rerun()
+        
+        # Cache management
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            if st.button("🔄 Refresh Users", type="secondary"):
+                if 'all_users_cache' in st.session_state:
+                    del st.session_state.all_users_cache
+                if 'all_users_cache_timestamp' in st.session_state:
+                    del st.session_state.all_users_cache_timestamp
+                st.rerun()
+        with col2:
+            if st.button("🗑️ Clear Cache", type="secondary"):
+                if 'all_users_cache' in st.session_state:
+                    del st.session_state.all_users_cache
+                if 'all_users_cache_timestamp' in st.session_state:
+                    del st.session_state.all_users_cache_timestamp
+                st.rerun()
 
-        all_users = fetch_all_users(token)
+        # Show cache info if available
+        if 'all_users_cache' in st.session_state and st.session_state.all_users_cache:
+            cache_timestamp = st.session_state.get('all_users_cache_timestamp', 'Unknown')
+            if isinstance(cache_timestamp, datetime):
+                cache_time_str = cache_timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                cache_time_str = str(cache_timestamp)
+            st.success(f"✅ Cached {len(st.session_state.all_users_cache)} users (last updated: {cache_time_str})")
+
+        all_users = fetch_all_users(token, skip=0, limit=1000)  # Get all users
         if all_users:
             # Create a more readable table
             display_data = []
@@ -266,11 +339,14 @@ def render_users_page():
                         "Phone": u.get("phone", ""),
                         "Gender": u.get("gender", ""),
                         "Active": "✅" if u.get("is_active") else "❌",
+                        "Created": u.get("created_at", "")[:10] if u.get("created_at") else "",
+                        "Last Login": u.get("last_login_at", "")[:10] if u.get("last_login_at") else ""
                     }
                 )
             st.dataframe(display_data, use_container_width=True)
+            st.info(f"Showing {len(all_users)} users")
         else:
-            st.info("📭 No users found.")
+            st.info("�� No users found.")
 
     with tab2:
         st.markdown("### Search User")
