@@ -1,6 +1,6 @@
 # Admin Dashboard
 
-A modern, secure admin dashboard built with Streamlit for managing users, categories, and records.
+A modern, secure admin dashboard built with Streamlit for managing users, categories, records, and contributions.
 
 ## Features
 
@@ -8,6 +8,7 @@ A modern, secure admin dashboard built with Streamlit for managing users, catego
 - 👥 **User Management** - Create, read, update, delete users
 - 📂 **Category Management** - Manage content categories
 - 📄 **Record Management** - Handle various types of records
+- 📊 **Contributions Analytics** - User contributions, media statistics, and gender distribution
 - 🎨 **Modern UI** - Clean, responsive design with tabs and better organization
 - 🔄 **Real-time Updates** - Automatic refresh and state management
 
@@ -66,6 +67,13 @@ A modern, secure admin dashboard built with Streamlit for managing users, catego
 - Edit record information and location data
 - Delete records with confirmation
 
+#### Contributions Analytics
+- **Statistics Dashboard** - Total users, active users, gender distribution with interactive charts
+- **User Contributions** - View all contributions for specific users with media type breakdown
+- **Media Contributions** - Filter contributions by media type (text, audio, video, image)
+- **User Pagination** - Browse all users with configurable pagination (skip/limit)
+- **Interactive Charts** - Pie charts for gender distribution and bar charts for media contributions
+
 ## Technical Details
 
 ### API Endpoints
@@ -73,6 +81,7 @@ A modern, secure admin dashboard built with Streamlit for managing users, catego
 - **Users:** `https://backend2.swecha.org/api/v1/users/`
 - **Categories:** `https://backend2.swecha.org/api/v1/categories/`
 - **Records:** `https://backend2.swecha.org/api/v1/records/`
+- **Contributions:** `https://backend2.swecha.org/api/v1/users/{user_id}/contributions`
 
 ### Security
 - OTP-based authentication
@@ -123,7 +132,8 @@ admin/
 └── my_pages/
     ├── users_page.py    # Users management
     ├── categories_page.py # Categories management
-    └── records_page.py  # Records management
+    ├── records_page.py  # Records management
+    └── contributions_page.py # Contributions analytics
 ```
 
 ### Adding New Features

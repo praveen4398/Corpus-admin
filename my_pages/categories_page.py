@@ -29,16 +29,28 @@ def is_authenticated(token: str) -> bool:
 
 
 def fetch_all_categories(token):
-    """Fetch all categories from the backend."""
+    """Fetch all categories from the backend, handling pagination if supported."""
     try:
         print("FETCH TOKEN:", token)
         headers = {"accept": "application/json", "Authorization": f"Bearer {token}"}
-        response = requests.get(CATEGORIES_API_URL, headers=headers)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.warning("Failed to fetch categories.")
-            return []
+        all_categories = []
+        skip = 0
+        batch_size = 1000  # Adjust if backend has a different max limit
+        while True:
+            params = {"skip": skip, "limit": batch_size}
+            response = requests.get(CATEGORIES_API_URL, headers=headers, params=params)
+            if response.status_code == 200:
+                data = response.json()
+                if not data:
+                    break
+                all_categories.extend(data)
+                if len(data) < batch_size:
+                    break  # Last batch
+                skip += batch_size
+            else:
+                st.warning("Failed to fetch categories.")
+                break
+        return all_categories
     except Exception as e:
         st.error(f"Network error while fetching categories: {e}")
         return []
@@ -193,7 +205,7 @@ def render_update_category_form(category_id, current_data):
                         st.session_state.update_category_error = None
                         # Refresh search results if category was updated from search
                         if 'category_search_result' in st.session_state and st.session_state.category_search_result and st.session_state.category_search_result.get('id') == category_id:
-                            st.session_state.category_search_result = fetch_category_by_id(token, category_id)
+                            st.session_state.category_search_result = fetch_category_by_id(st.session_state.token, category_id)
                         del st.session_state.edit_category
                         st.rerun()
                     else:
