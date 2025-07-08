@@ -122,7 +122,7 @@ def fetch_user_contributions_summary(token, user_id):
         return user_id, 0
 
 
-def analyze_user_activity_bulk(token, users, max_workers=20):
+def analyze_user_activity_bulk(token, users, max_workers=40):
     """Analyze user activity in bulk using threading for better performance."""
     
     # Check if we have cached activity analysis
@@ -144,13 +144,19 @@ def analyze_user_activity_bulk(token, users, max_workers=20):
     completed_count = 0
     lock = threading.Lock()
     
+    # Only update progress every N users for large sets
+    update_every = 1
+    if total_users > 500:
+        update_every = 10
+    
     def update_progress():
         nonlocal completed_count
         with lock:
             completed_count += 1
-            progress = completed_count / total_users
-            progress_bar.progress(progress)
-            status_text.text(f"Processed {completed_count}/{total_users} users ({progress:.1%})")
+            if completed_count % update_every == 0 or completed_count == total_users:
+                progress = completed_count / total_users
+                progress_bar.progress(progress)
+                status_text.text(f"Processed {completed_count}/{total_users} users ({progress:.1%})")
     
     # Use ThreadPoolExecutor to fetch contributions in parallel
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -193,7 +199,7 @@ def analyze_user_activity_bulk(token, users, max_workers=20):
 def get_user_activity_statistics(token):
     """Get comprehensive user activity statistics."""
     try:
-        all_users = fetch_all_users_batched(token)
+        all_users = fetch_all_users_batched(token, batch_size=1000)
         if not all_users:
             return None
         
@@ -548,7 +554,7 @@ def render_contributions_page():
         
         with col1:
             # Get all users for dropdown
-            all_users = fetch_all_users_batched(token)
+            all_users = fetch_all_users_batched(token, batch_size=1000)
             if all_users:
                 user_options = {f"{user.get('name', 'Unknown')}": user.get('id') 
                                for user in all_users}
@@ -683,7 +689,7 @@ def render_contributions_page():
         
         with col1:
             # Get all users for dropdown
-            all_users = fetch_all_users_batched(token)
+            all_users = fetch_all_users_batched(token, batch_size=1000)
             if all_users:
                 user_options = {f"{user.get('name', 'Unknown')}": user.get('id') 
                                for user in all_users}
@@ -799,7 +805,7 @@ def render_contributions_page():
                 st.rerun()
         
         # Get all users
-        all_users = fetch_all_users_batched(token)
+        all_users = fetch_all_users_batched(token, batch_size=1000)
         
         if all_users:
             st.success(f"✅ Loaded {len(all_users)} users")
