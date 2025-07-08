@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 
 import requests
 import streamlit as st
+import pandas as pd
+import plotly.express as px
 
 # API URLs
 USERS_API_URL = "https://backend2.swecha.org/api/v1/users/"
@@ -40,58 +42,39 @@ def fetch_user_by_id(token, user_id):
         return None
 
 
-def fetch_all_users(token, skip=0, limit=100):
-    """Fetch all users with pagination."""
+def fetch_all_users_batched(token, batch_size=1000):
+    """Fetch all users in batches and cache them."""
     try:
-        headers = COMMON_HEADERS(token)
-        
-        # Check if we already have all users stored in session state
+        # Use cache if available and not stale
         if ('all_users_cache' in st.session_state and 
             st.session_state.all_users_cache and 
             not is_cache_stale()):
-            all_users = st.session_state.all_users_cache
-            # Apply pagination to cached data
-            start_idx = skip
-            end_idx = skip + limit
-            return all_users[start_idx:end_idx]
+            return st.session_state.all_users_cache
         
-        # If not cached, fetch all users in batches
+        headers = COMMON_HEADERS(token)
         all_users = []
-        current_skip = 0
-        batch_size = 1000
-        
-        with st.spinner("Loading all users..."):
-            while True:
-                params = {"skip": current_skip, "limit": batch_size}
-                r = requests.get(USERS_API_URL, params=params, headers=headers)
-                
-                if r.status_code == 200:
-                    data = r.json()
-                    if isinstance(data, list):
-                        if not data:  # Empty response, we've reached the end
-                            break
-                        all_users.extend(data)
-                        current_skip += batch_size
-                        
-                        # If we got less than batch_size, we've reached the end
-                        if len(data) < batch_size:
-                            break
-                    else:
-                        st.error("Unexpected response format from the server.")
-                        return []
+        skip = 0
+        while True:
+            params = {"skip": skip, "limit": batch_size}
+            r = requests.get(USERS_API_URL, params=params, headers=headers)
+            if r.status_code == 200:
+                data = r.json()
+                if isinstance(data, list):
+                    if not data:
+                        break
+                    all_users.extend(data)
+                    skip += batch_size
+                    if len(data) < batch_size:
+                        break
                 else:
-                    st.error(f"Failed to fetch users. Status Code: {r.status_code}")
-                    return []
-        
-        # Store in session state for future use
+                    st.error("Unexpected response format from the server.")
+                    break
+            else:
+                st.error(f"Failed to fetch users. Status Code: {r.status_code}")
+                break
         st.session_state.all_users_cache = all_users
         st.session_state.all_users_cache_timestamp = datetime.now()
-        
-        # Apply pagination to the complete dataset
-        start_idx = skip
-        end_idx = skip + limit
-        return all_users[start_idx:end_idx]
-        
+        return all_users
     except Exception as e:
         st.error(f"Network error: {e}")
         return []
@@ -188,7 +171,7 @@ def delete_user(token, user_id):
 def fetch_users_by_name(token, user_name):
     """Fetch all users by name (case-insensitive)."""
     try:
-        users = fetch_all_users(token)
+        users = fetch_all_users_batched(token)
         matches = [user for user in users if user.get("name", "").lower() == user_name.lower()]
         if not matches:
             st.warning("No users found with that name.")
@@ -326,27 +309,105 @@ def render_users_page():
                 cache_time_str = str(cache_timestamp)
             st.success(f"✅ Cached {len(st.session_state.all_users_cache)} users (last updated: {cache_time_str})")
 
-        all_users = fetch_all_users(token, skip=0, limit=1000)  # Get all users
+        # --- Fetch all users (not just 1000) ---
+        all_users = fetch_all_users_batched(token, batch_size=1000)
         if all_users:
-            # Create a more readable table
-            display_data = []
+            # --- Summary Metrics ---
+            total_users = len(all_users)
+            active_users = sum(1 for u in all_users if u.get('is_active'))
+            inactive_users = total_users - active_users
+            gender_counts = {'male': 0, 'female': 0, 'other': 0, 'unknown': 0}
             for u in all_users:
-                display_data.append(
-                    {
-                        "ID": u.get("id", "")[:8] + "...",
-                        "Name": u.get("name", ""),
-                        "Email": u.get("email", ""),
-                        "Phone": u.get("phone", ""),
-                        "Gender": u.get("gender", ""),
-                        "Active": "✅" if u.get("is_active") else "❌",
-                        "Created": u.get("created_at", "")[:10] if u.get("created_at") else "",
-                        "Last Login": u.get("last_login_at", "")[:10] if u.get("last_login_at") else ""
-                    }
+                gender = (u.get('gender') or 'unknown').lower().strip()
+                if gender in ['male', 'm']:
+                    gender_counts['male'] += 1
+                elif gender in ['female', 'f']:
+                    gender_counts['female'] += 1
+                elif gender in ['other', 'o']:
+                    gender_counts['other'] += 1
+                else:
+                    gender_counts['unknown'] += 1
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("Total Users", total_users)
+            with col2:
+                st.metric("Active Users", active_users)
+            with col3:
+                st.metric("Inactive Users", inactive_users)
+            
+            # --- Charts ---
+            chart_col1, chart_col2 = st.columns(2)
+            with chart_col1:
+                # Gender Pie Chart
+                gender_labels = [k.title() for k in gender_counts.keys() if gender_counts[k] > 0]
+                gender_values = [v for k, v in gender_counts.items() if v > 0]
+                if gender_values:
+                    fig = px.pie(
+                        names=gender_labels,
+                        values=gender_values,
+                        title="Gender Distribution",
+                        color_discrete_sequence=px.colors.qualitative.Pastel
+                    )
+                    fig.update_traces(textposition='inside', textinfo='percent+label+value')
+                    st.plotly_chart(fig, use_container_width=True)
+                else:
+                    st.info("No gender data available.")
+            with chart_col2:
+                # Active/Inactive Bar Chart
+                status_df = pd.DataFrame({
+                    'Status': ['Active', 'Inactive'],
+                    'Count': [active_users, inactive_users]
+                })
+                fig2 = px.bar(
+                    status_df,
+                    x='Status',
+                    y='Count',
+                    title="User Status",
+                    color='Status',
+                    color_discrete_map={'Active': '#4CAF50', 'Inactive': '#FF9800'}
                 )
-            st.dataframe(display_data, use_container_width=True)
-            st.info(f"Showing {len(all_users)} users")
+                fig2.update_layout(xaxis_title="Status", yaxis_title="Number of Users", showlegend=False)
+                st.plotly_chart(fig2, use_container_width=True)
+            
+            # --- Registration Date Plot ---
+            reg_dates = [u.get('created_at', '')[:10] for u in all_users if u.get('created_at')]
+            if reg_dates:
+                reg_df = pd.DataFrame({'Registration Date': reg_dates})
+                reg_count = reg_df['Registration Date'].value_counts().sort_index()
+                reg_plot_df = pd.DataFrame({'Date': reg_count.index, 'Count': reg_count.values})
+                fig3 = px.bar(
+                    reg_plot_df,
+                    x='Date',
+                    y='Count',
+                    title="Users by Registration Date",
+                    labels={'Date': 'Registration Date', 'Count': 'Number of Users'}
+                )
+                fig3.update_layout(xaxis_title="Registration Date", yaxis_title="Number of Users")
+                st.plotly_chart(fig3, use_container_width=True)
+            else:
+                st.info("No registration date data available.")
+            
+            # --- Detailed Table in Expander ---
+            with st.expander("📋 View Detailed Users Table"):
+                display_data = []
+                for u in all_users:
+                    display_data.append(
+                        {
+                            "ID": u.get("id", "")[:8] + "...",
+                            "Name": u.get("name", ""),
+                            "Email": u.get("email", ""),
+                            "Phone": u.get("phone", ""),
+                            "Gender": u.get("gender", ""),
+                            "Active": "✅" if u.get("is_active") else "❌",
+                            "Created": u.get("created_at", "")[:10] if u.get("created_at") else "",
+                            "Last Login": u.get("last_login_at", "")[:10] if u.get("last_login_at") else ""
+                        }
+                    )
+                st.dataframe(display_data, use_container_width=True)
+                st.info(f"Showing {len(all_users)} users")
         else:
-            st.info("�� No users found.")
+            st.info(" No users found.")
 
     with tab2:
         st.markdown("### Search User")

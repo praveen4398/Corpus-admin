@@ -1,7 +1,11 @@
 import re
+from datetime import datetime
 
 import requests
 import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
 
 # API URLs
 RECORDS_API_URL = "https://backend2.swecha.org/api/v1/records/"
@@ -25,19 +29,86 @@ def is_authenticated(token: str) -> bool:
         return False
 
 
+def is_records_cache_stale(max_age_minutes=30):
+    """Check if the cached records data is stale and needs refresh."""
+    if 'records_cache_timestamp' not in st.session_state:
+        return True
+    
+    cache_timestamp = st.session_state.records_cache_timestamp
+    if not isinstance(cache_timestamp, datetime):
+        return True
+    
+    age = datetime.now() - cache_timestamp
+    return age.total_seconds() > (max_age_minutes * 60)
+
+
+def clear_records_cache():
+    """Clear the cached records data."""
+    if 'records_cache' in st.session_state:
+        del st.session_state.records_cache
+    if 'records_cache_timestamp' in st.session_state:
+        del st.session_state.records_cache_timestamp
+
+
 def fetch_all_records(token):
-    """Fetch all records from the backend."""
+    """Fetch all records from the backend using pagination with caching."""
     try:
+        # Check if we already have records stored in session state and cache is not stale
+        if ('records_cache' in st.session_state and 
+            st.session_state.records_cache and 
+            not is_records_cache_stale()):
+            st.info(f"📋 Using cached data: {len(st.session_state.records_cache)} records")
+            return st.session_state.records_cache
+        
         headers = COMMON_HEADERS(token)
-        response = requests.get(RECORDS_API_URL, headers=headers)
-        print("RECORDS FETCH RESPONSE:", response.status_code, response.text)
-        if response.status_code == 200:
-            return response.json()
-        else:
-            st.error(
-                f"Failed to fetch records: {response.status_code} - {response.text}"
-            )
-            return []
+        all_records = []
+        skip = 0
+        limit = 1000  # Maximum allowed by API
+        
+        with st.spinner("Loading all records..."):
+            progress_bar = st.progress(0)
+            batch_count = 0
+            
+            while True:
+                params = {"skip": skip, "limit": limit}
+                response = requests.get(RECORDS_API_URL, headers=headers, params=params)
+                
+                if response.status_code == 200:
+                    batch_records = response.json()
+                    if isinstance(batch_records, list):
+                        batch_size = len(batch_records)
+                        
+                        if not batch_records:  # Empty response, we've reached the end
+                            break
+                        
+                        all_records.extend(batch_records)
+                        skip += limit
+                        batch_count += 1
+                        
+                        # Update progress (estimate based on typical response size)
+                        progress = min(0.9, batch_count * 0.1)  # Assume ~10 batches max
+                        progress_bar.progress(progress)
+                        
+                        # If we got less than limit, we've reached the end
+                        if batch_size < limit:
+                            break
+                    else:
+                        st.error("Unexpected response format from the server.")
+                        break
+                else:
+                    st.error(
+                        f"Failed to fetch records batch. Status Code: {response.status_code} - {response.text}"
+                    )
+                    break
+            
+            progress_bar.progress(1.0)
+            st.success(f"✅ Loaded {len(all_records)} records in {batch_count} batches")
+        
+        # Store in session state for future use
+        st.session_state.records_cache = all_records
+        st.session_state.records_cache_timestamp = datetime.now()
+        
+        return all_records
     except Exception as e:
         st.error(f"Network error while fetching records: {e}")
         return []
@@ -266,6 +337,70 @@ def render_update_record_form(record_id, current_data):
                     st.rerun()
 
 
+def create_records_visualizations(records, categories):
+    """Create visualizations for records data."""
+    if not records:
+        return None, None
+    
+    # Prepare data for media type analysis
+    media_type_counts = {}
+    for record in records:
+        media_type = record.get('media_type', 'unknown')
+        media_type_counts[media_type] = media_type_counts.get(media_type, 0) + 1
+    
+    # Create media type chart
+    media_data = [{'Media Type': k, 'Count': v} for k, v in media_type_counts.items()]
+    media_df = pd.DataFrame(media_data)
+    media_fig = px.bar(
+        media_df, 
+        x='Media Type', 
+        y='Count',
+        title="📊 Records by Media Type",
+        color='Media Type',
+        color_discrete_map={
+            'text': '#1f77b4',
+            'image': '#ff7f0e', 
+            'video': '#2ca02c',
+            'audio': '#d62728',
+            'unknown': '#9467bd'
+        }
+    )
+    media_fig.update_layout(
+        xaxis_title="Media Type",
+        yaxis_title="Number of Records",
+        showlegend=False
+    )
+    
+    # Prepare data for category analysis
+    category_counts = {}
+    category_names = {cat['id']: cat.get('title', cat.get('name', 'Unknown')) for cat in categories}
+    
+    for record in records:
+        category_id = record.get('category_id')
+        if category_id:
+            category_name = category_names.get(category_id, 'Unknown')
+            category_counts[category_name] = category_counts.get(category_name, 0) + 1
+    
+    # Create category chart
+    if category_counts:
+        category_data = [{'Category': k, 'Count': v} for k, v in category_counts.items()]
+        category_df = pd.DataFrame(category_data)
+        category_df = category_df.sort_values('Count', ascending=False)
+        
+        category_fig = px.pie(
+            category_df,
+            values='Count',
+            names='Category',
+            title="📈 Records by Category",
+            hole=0.3
+        )
+        category_fig.update_traces(textposition='inside', textinfo='percent+label+value')
+    else:
+        category_fig = None
+    
+    return media_fig, category_fig
+
+
 def render_records_page():
     # Page header with styling
     st.markdown(
@@ -298,24 +433,70 @@ def render_records_page():
 
     with tab1:
         st.markdown("### All Records")
-        if st.button("🔄 Refresh Records", type="secondary"):
-            st.rerun()
+        
+        # Cache management
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.info("💡 Records data is cached for better performance. Use 'Refresh Records' to get latest data.")
+        with col2:
+            if st.button("🔄 Refresh Records", type="primary"):
+                clear_records_cache()
+                st.rerun()
 
         records = fetch_all_records(token)
         if records:
-            # Create a more readable table
-            display_data = []
-            for r in records:
-                display_data.append(
-                    {
-                        "ID": r.get("uid", "")[:8] + "...",
-                        "Title": r.get("title", ""),
-                        "Media Type": r.get("media_type", ""),
-                        "Status": r.get("status", ""),
-                        "Reviewed": "✅" if r.get("reviewed") else "❌",
-                    }
-                )
-            st.dataframe(display_data, use_container_width=True)
+            # Create visualizations
+            media_fig, category_fig = create_records_visualizations(records, st.session_state.categories_list)
+            
+            # Display charts
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if media_fig:
+                    st.plotly_chart(media_fig, use_container_width=True)
+                else:
+                    st.info("No media type data available")
+            
+            with col2:
+                if category_fig:
+                    st.plotly_chart(category_fig, use_container_width=True)
+                else:
+                    st.info("No category data available")
+            
+            # Summary statistics
+            st.markdown("### 📊 Summary Statistics")
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                st.metric("Total Records", len(records))
+            
+            with col2:
+                reviewed_count = sum(1 for r in records if r.get('reviewed', False))
+                st.metric("Reviewed Records", reviewed_count)
+            
+            with col3:
+                pending_review = len(records) - reviewed_count
+                st.metric("Pending Review", pending_review)
+            
+            with col4:
+                review_rate = (reviewed_count / len(records) * 100) if records else 0
+                st.metric("Review Rate", f"{review_rate:.1f}%")
+            
+            # Detailed records table (collapsible)
+            with st.expander("📋 View Detailed Records Table"):
+                # Create a more readable table
+                display_data = []
+                for r in records:
+                    display_data.append(
+                        {
+                            "ID": r.get("uid", "")[:8] + "...",
+                            "Title": r.get("title", ""),
+                            "Media Type": r.get("media_type", ""),
+                            "Status": r.get("status", ""),
+                            "Reviewed": "✅" if r.get("reviewed") else "❌",
+                        }
+                    )
+                st.dataframe(display_data, use_container_width=True)
         else:
             st.info("📭 No records found.")
 
